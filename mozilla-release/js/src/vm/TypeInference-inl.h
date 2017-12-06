@@ -15,6 +15,8 @@
 #include "mozilla/Casting.h"
 #include "mozilla/PodOperations.h"
 
+#include "jsgc.h"
+
 #include "builtin/SymbolObject.h"
 #include "jit/BaselineJIT.h"
 #include "vm/ArrayObject.h"
@@ -646,7 +648,7 @@ TypeScript::SetThis(JSContext* cx, JSScript* script, TypeSet::Type type)
         AutoEnterAnalysis enter(cx);
 
         InferSpew(ISpewOps, "externalType: setThis %p: %s",
-                  script, TypeSet::TypeString(type));
+                  script, TypeSet::TypeString(type).get());
         types->addType(cx, type);
     }
 }
@@ -670,7 +672,7 @@ TypeScript::SetArgument(JSContext* cx, JSScript* script, unsigned arg, TypeSet::
         AutoEnterAnalysis enter(cx);
 
         InferSpew(ISpewOps, "externalType: setArg %p %u: %s",
-                  script, arg, TypeSet::TypeString(type));
+                  script, arg, TypeSet::TypeString(type).get());
         types->addType(cx, type);
     }
 }

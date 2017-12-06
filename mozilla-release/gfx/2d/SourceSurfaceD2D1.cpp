@@ -1,5 +1,6 @@
-/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -22,6 +23,9 @@ SourceSurfaceD2D1::SourceSurfaceD2D1(ID2D1Image *aImage, ID2D1DeviceContext *aDC
 
   mFormat = aFormat;
   mSize = aSize;
+  if (aDT) {
+    mSnapshotLock = aDT->mSnapshotLock;
+  }
 }
 
 SourceSurfaceD2D1::~SourceSurfaceD2D1()
@@ -108,6 +112,9 @@ SourceSurfaceD2D1::EnsureRealizedBitmap()
 void
 SourceSurfaceD2D1::DrawTargetWillChange()
 {
+  MOZ_ASSERT(mSnapshotLock);
+  mSnapshotLock->AssertCurrentThreadOwns();
+
   // At this point in time this should always be true here.
   MOZ_ASSERT(mRealizedBitmap);
 

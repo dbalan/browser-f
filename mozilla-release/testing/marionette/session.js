@@ -8,20 +8,13 @@ const {classes: Cc, interfaces: Ci, utils: Cu} = Components;
 
 Cu.importGlobalProperties(["URL"]);
 
-Cu.import("resource://gre/modules/Log.jsm");
 Cu.import("resource://gre/modules/Preferences.jsm");
 Cu.import("resource://gre/modules/Services.jsm");
 
 Cu.import("chrome://marionette/content/assert.js");
-const {
-  error,
-  InvalidArgumentError,
-} = Cu.import("chrome://marionette/content/error.js", {});
+const {InvalidArgumentError} = Cu.import("chrome://marionette/content/error.js", {});
 
 this.EXPORTED_SYMBOLS = ["session"];
-
-const logger = Log.repository.getLogger("Marionette");
-const {pprint} = error;
 
 // Enable testing this module, as Services.appinfo.* is not available
 // in xpcshell tests.
@@ -373,7 +366,7 @@ session.Capabilities = class extends Map {
       ["moz:headless", Cc["@mozilla.org/gfx/info;1"].getService(Ci.nsIGfxInfo).isHeadless],
       ["moz:processID", Services.appinfo.processID],
       ["moz:profile", maybeProfile()],
-      ["moz:webdriverClick", false],
+      ["moz:webdriverClick", true],
     ]);
   }
 

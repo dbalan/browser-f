@@ -1,5 +1,6 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -81,8 +82,8 @@ ClientPaintedLayer::UpdateContentClient(PaintState& aState)
 
   AddToValidRegion(aState.mRegionToDraw);
 
-  ContentClientRemote *contentClientRemote =
-      static_cast<ContentClientRemote *>(mContentClient.get());
+  ContentClientRemoteBuffer *contentClientRemote =
+      static_cast<ContentClientRemoteBuffer *>(mContentClient.get());
   MOZ_ASSERT(contentClientRemote->GetIPCHandle());
 
   // Hold(this) ensures this layer is kept alive through the current transaction
@@ -90,8 +91,7 @@ ClientPaintedLayer::UpdateContentClient(PaintState& aState)
   // so deleting this Hold for whatever reason will break things.
   ClientManager()->Hold(this);
   contentClientRemote->Updated(aState.mRegionToDraw,
-                               mVisibleRegion.ToUnknownRegion(),
-                               aState.mDidSelfCopy);
+                               mVisibleRegion.ToUnknownRegion());
 }
 
 bool
@@ -117,14 +117,14 @@ ClientPaintedLayer::UpdatePaintRegion(PaintState& aState)
 uint32_t
 ClientPaintedLayer::GetPaintFlags()
 {
-  uint32_t flags = RotatedContentBuffer::PAINT_CAN_DRAW_ROTATED;
+  uint32_t flags = ContentClient::PAINT_CAN_DRAW_ROTATED;
   #ifndef MOZ_IGNORE_PAINT_WILL_RESAMPLE
    if (ClientManager()->CompositorMightResample()) {
-     flags |= RotatedContentBuffer::PAINT_WILL_RESAMPLE;
+     flags |= ContentClient::PAINT_WILL_RESAMPLE;
    }
-   if (!(flags & RotatedContentBuffer::PAINT_WILL_RESAMPLE)) {
+   if (!(flags & ContentClient::PAINT_WILL_RESAMPLE)) {
      if (MayResample()) {
-       flags |= RotatedContentBuffer::PAINT_WILL_RESAMPLE;
+       flags |= ContentClient::PAINT_WILL_RESAMPLE;
      }
    }
   #endif
@@ -139,21 +139,19 @@ ClientPaintedLayer::PaintThebes(nsTArray<ReadbackProcessor::Update>* aReadbackUp
   NS_ASSERTION(ClientManager()->InDrawing(),
                "Can only draw in drawing phase");
 
-  mContentClient->BeginPaint();
-
   uint32_t flags = GetPaintFlags();
 
-  PaintState state = mContentClient->BeginPaintBuffer(this, flags);
+  PaintState state = mContentClient->BeginPaint(this, flags);
   if (!UpdatePaintRegion(state)) {
     return;
   }
 
   bool didUpdate = false;
-  RotatedContentBuffer::DrawIterator iter;
+  RotatedBuffer::DrawIterator iter;
   while (DrawTarget* target = mContentClient->BorrowDrawTargetForPainting(state, &iter)) {
     if (!target || !target->IsValid()) {
       if (target) {
-        mContentClient->ReturnDrawTargetToBuffer(target);
+        mContentClient->ReturnDrawTarget(target);
       }
       continue;
     }
@@ -172,7 +170,7 @@ ClientPaintedLayer::PaintThebes(nsTArray<ReadbackProcessor::Update>* aReadbackUp
                                               ClientManager()->GetPaintedLayerCallbackData());
 
     ctx = nullptr;
-    mContentClient->ReturnDrawTargetToBuffer(target);
+    mContentClient->ReturnDrawTarget(target);
     didUpdate = true;
   }
 
@@ -206,29 +204,36 @@ ClientPaintedLayer::PaintThebes(nsTArray<ReadbackProcessor::Update>* aReadbackUp
  *     but block the main thread while the paint thread paints. Async OMTP doesn't block
  *     the main thread. Sync OMTP is only meant to be used as a debugging tool.
  */
-bool
+void
 ClientPaintedLayer::PaintOffMainThread()
 {
-  mContentClient->BeginAsyncPaint();
-
   uint32_t flags = GetPaintFlags();
 
-  PaintState state = mContentClient->BeginPaintBuffer(this, flags);
-  if (!UpdatePaintRegion(state)) {
-    return false;
+  PaintState state = mContentClient->BeginPaint(this, flags | ContentClient::PAINT_ASYNC);
+  bool didUpdate = false;
+
+  if (state.mBufferState) {
+    PaintThread::Get()->PrepareBuffer(state.mBufferState);
+    didUpdate = true;
   }
 
-  bool didUpdate = false;
-  RotatedContentBuffer::DrawIterator iter;
+  if (!UpdatePaintRegion(state)) {
+    if (didUpdate) {
+      ClientManager()->SetQueuedAsyncPaints();
+    }
+    return;
+  }
+
+  RotatedBuffer::DrawIterator iter;
 
   // Debug Protip: Change to BorrowDrawTargetForPainting if using sync OMTP.
   while (RefPtr<CapturedPaintState> captureState =
           mContentClient->BorrowDrawTargetForRecording(state, &iter))
   {
-    DrawTarget* target = captureState->mTarget;
+    DrawTarget* target = captureState->mTargetDual;
     if (!target || !target->IsValid()) {
       if (target) {
-        mContentClient->ReturnDrawTargetToBuffer(target);
+        mContentClient->ReturnDrawTarget(target);
       }
       continue;
     }
@@ -256,9 +261,9 @@ ClientPaintedLayer::PaintOffMainThread()
 
     captureState->mCapture = captureDT.forget();
     PaintThread::Get()->PaintContents(captureState,
-                                      RotatedContentBuffer::PrepareDrawTargetForPainting);
+                                      ContentClient::PrepareDrawTargetForPainting);
 
-    mContentClient->ReturnDrawTargetToBuffer(target);
+    mContentClient->ReturnDrawTarget(target);
 
     didUpdate = true;
   }
@@ -268,9 +273,9 @@ ClientPaintedLayer::PaintOffMainThread()
 
   if (didUpdate) {
     UpdateContentClient(state);
-    ClientManager()->SetNeedTextureSyncOnPaintThread();
+    ClientManager()->SetQueuedAsyncPaints();
   }
-  return true;
+  return;
 }
 
 void
@@ -283,9 +288,8 @@ ClientPaintedLayer::RenderLayerWithReadback(ReadbackProcessor *aReadback)
   }
 
   if (CanRecordLayer(aReadback)) {
-    if (PaintOffMainThread()) {
-      return;
-    }
+    PaintOffMainThread();
+    return;
   }
 
   nsTArray<ReadbackProcessor::Update> readbackUpdates;

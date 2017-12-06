@@ -371,6 +371,36 @@ public: /* Necko internal use only... */
       return mChannelId;
     }
 
+    void InternalSetUploadStream(nsIInputStream *uploadStream)
+    {
+      mUploadStream = uploadStream;
+    }
+
+    void SetUploadStreamHasHeaders(bool hasHeaders)
+    {
+      mUploadStreamHasHeaders = hasHeaders;
+    }
+
+    MOZ_MUST_USE nsresult
+    SetReferrerWithPolicyInternal(nsIURI *referrer, uint32_t referrerPolicy)
+    {
+      nsAutoCString spec;
+      nsresult rv = referrer->GetAsciiSpec(spec);
+      if (NS_FAILED(rv)) {
+        return rv;
+      }
+      mReferrer = referrer;
+      mReferrerPolicy = referrerPolicy;
+      rv = mRequestHead.SetHeader(nsHttp::Referer, spec);
+      return rv;
+    }
+
+    MOZ_MUST_USE nsresult SetTopWindowURI(nsIURI* aTopWindowURI)
+    {
+      mTopWindowURI = aTopWindowURI;
+      return NS_OK;
+    }
+
 protected:
   // Handle notifying listener, removing from loadgroup if request failed.
   void     DoNotifyListener();
@@ -433,6 +463,12 @@ protected:
 
   // Called before we create the redirect target channel.
   already_AddRefed<nsILoadInfo> CloneLoadInfoForRedirect(nsIURI *newURI, uint32_t redirectFlags);
+
+  static void CallTypeSniffers(void *aClosure, const uint8_t *aData,
+                               uint32_t aCount);
+
+  nsresult
+  CheckRedirectLimit(uint32_t aRedirectFlags) const;
 
   friend class PrivateBrowsingChannel<HttpBaseChannel>;
   friend class InterceptFailedOnStop;
@@ -571,7 +607,9 @@ protected:
   // the HTML file.
   nsString                          mInitiatorType;
   // Number of redirects that has occurred.
-  int16_t                           mRedirectCount;
+  int8_t                            mRedirectCount;
+  // Number of internal redirects that has occurred.
+  int8_t                            mInternalRedirectCount;
   // A time value equal to the starting time of the fetch that initiates the
   // redirect.
   mozilla::TimeStamp                mRedirectStartTimeStamp;
@@ -664,7 +702,7 @@ protected:
   // Classified channel's matched information
   nsCString mMatchedList;
   nsCString mMatchedProvider;
-  nsCString mMatchedPrefix;
+  nsCString mMatchedFullHash;
 };
 
 NS_DEFINE_STATIC_IID_ACCESSOR(HttpBaseChannel, HTTP_BASE_CHANNEL_IID)

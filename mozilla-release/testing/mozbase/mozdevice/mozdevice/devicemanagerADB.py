@@ -2,6 +2,8 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this file,
 # You can obtain one at http://mozilla.org/MPL/2.0/.
 
+from __future__ import absolute_import
+
 import logging
 import re
 import os
@@ -11,10 +13,10 @@ import traceback
 
 from distutils import dir_util
 
-from devicemanager import DeviceManager, DMError
+from .devicemanager import DeviceManager, DMError
 from mozprocess import ProcessHandler
 import mozfile
-import version_codes
+from . import version_codes
 
 
 class DeviceManagerADB(DeviceManager):
@@ -721,9 +723,13 @@ class DeviceManagerADB(DeviceManager):
             proc.run(timeout=timeout)
             ret_code = proc.wait()
             if ret_code is None:
+                self._logger.error("Failed to launch %s (may retry)" % finalArgs)
                 proc.kill()
                 retries += 1
             else:
+                if ret_code != 0:
+                    self._logger.error("Non-zero return code (%d) from %s" % (ret_code, finalArgs))
+                    self._logger.error("Output: %s" % proc.output)
                 return ret_code
 
         raise DMError("Timeout exceeded for _checkCmd call after %d retries." % retries)

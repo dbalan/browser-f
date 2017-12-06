@@ -68,6 +68,19 @@ public class WebAppManifest {
         }
     }
 
+    public static WebAppManifest fromString(final String url, final String input) {
+        try {
+            final Uri manifestUri = Uri.parse(url);
+            final JSONObject manifest = new JSONObject(input);
+            final JSONObject manifestField = manifest.getJSONObject("manifest");
+
+            return new WebAppManifest(manifestUri, manifest, manifestField);
+        } catch (Exception e) {
+            Log.e(LOGTAG, "Failed to read webapp manifest", e);
+            return null;
+        }
+    }
+
     private WebAppManifest(final Uri uri, final JSONObject manifest, final JSONObject manifestField) {
         mManifestUri = uri;
         readManifest(manifest, manifestField);
@@ -173,6 +186,13 @@ public class WebAppManifest {
         return loadIconResult.getBestBitmap(GeckoAppShell.getPreferredIconSize());
     }
 
+    private static Uri stripPath(final Uri uri) {
+        return new Uri.Builder()
+            .scheme(uri.getScheme())
+            .authority(uri.getAuthority())
+            .build();
+    }
+
     private static Uri stripLastPathSegment(final Uri uri) {
         final Uri.Builder builder = new Uri.Builder()
             .scheme(uri.getScheme())
@@ -187,7 +207,7 @@ public class WebAppManifest {
     }
 
     private Uri readScope(final JSONObject manifest) {
-        final Uri defaultScope = stripLastPathSegment(mStartUri);
+        final Uri defaultScope = stripPath(mStartUri);
         final String scopeStr = manifest.optString("scope", null);
         if (scopeStr == null) {
             return defaultScope;

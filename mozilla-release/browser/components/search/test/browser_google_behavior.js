@@ -32,7 +32,8 @@ function promiseStateChangeURI() {
         if (!(flags & docStart) || !webProgress.isTopLevel)
           return;
 
-        if (req.originalURI.spec == "about:blank")
+        let spec = req.originalURI.spec;
+        if (spec == "about:blank")
           return;
 
         gBrowser.removeProgressListener(listener);
@@ -44,10 +45,10 @@ function promiseStateChangeURI() {
         req.cancel(Components.results.NS_ERROR_FAILURE);
 
         executeSoon(() => {
-          resolve(req.originalURI.spec);
+          resolve(spec);
         });
       }
-    }
+    };
 
     gBrowser.addProgressListener(listener);
   });
@@ -145,7 +146,7 @@ async function testSearchEngine(engineDetails) {
       name: "new tab search",
       searchURL: base + engineDetails.codes.newTab,
       async preTest(tab) {
-        let browser = tab.linkedBrowser
+        let browser = tab.linkedBrowser;
         await BrowserTestUtils.loadURI(browser, "about:newtab");
         await BrowserTestUtils.browserLoaded(browser);
 

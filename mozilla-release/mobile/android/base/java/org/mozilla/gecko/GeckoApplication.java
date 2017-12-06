@@ -4,6 +4,7 @@
 
 package org.mozilla.gecko;
 
+import android.Manifest;
 import android.app.Activity;
 import android.app.Application;
 import android.content.ContentResolver;
@@ -13,9 +14,13 @@ import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.net.Uri;
+import android.os.Environment;
 import android.os.Process;
 import android.os.SystemClock;
+import android.provider.MediaStore;
+import android.support.design.widget.Snackbar;
 import android.text.TextUtils;
+import android.util.Base64;
 import android.util.Log;
 
 import com.squareup.leakcanary.LeakCanary;
@@ -26,6 +31,7 @@ import org.mozilla.gecko.db.BrowserContract;
 import org.mozilla.gecko.db.BrowserDB;
 import org.mozilla.gecko.db.LocalBrowserDB;
 import org.mozilla.gecko.distribution.Distribution;
+import org.mozilla.gecko.gfx.BitmapUtils;
 import org.mozilla.gecko.home.HomePanelsManager;
 import org.mozilla.gecko.icons.IconCallback;
 import org.mozilla.gecko.icons.IconResponse;
@@ -40,6 +46,7 @@ import org.mozilla.gecko.permissions.Permissions;
 import org.mozilla.gecko.preferences.DistroSharedPrefsImport;
 import org.mozilla.gecko.util.ActivityUtils;
 import org.mozilla.gecko.telemetry.TelemetryBackgroundReceiver;
+import org.mozilla.gecko.util.ActivityResultHandler;
 import org.mozilla.gecko.util.BundleEventListener;
 import org.mozilla.gecko.util.EventCallback;
 import org.mozilla.gecko.util.GeckoBundle;
@@ -47,12 +54,18 @@ import org.mozilla.gecko.util.HardwareUtils;
 import org.mozilla.gecko.util.PRNGFixes;
 import org.mozilla.gecko.util.ShortcutUtils;
 import org.mozilla.gecko.util.ThreadUtils;
+import org.mozilla.gecko.util.UIAsyncTask;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.InputStream;
+import java.io.IOException;
 import java.lang.reflect.Method;
+import java.net.URL;
 import java.util.UUID;
 
-public class GeckoApplication extends Application {
+public class GeckoApplication extends Application
+                              implements HapticFeedbackDelegate {
     private static final String LOG_TAG = "GeckoApplication";
     private static final String MEDIA_DECODING_PROCESS_CRASH = "MEDIA_DECODING_PROCESS_CRASH";
 
@@ -63,6 +76,8 @@ public class GeckoApplication extends Application {
     private LightweightTheme mLightweightTheme;
 
     private RefWatcher mRefWatcher;
+
+    private final EventListener mListener = new EventListener();
 
     private static String sSessionUUID = null;
 
@@ -201,6 +216,15 @@ public class GeckoApplication extends Application {
         Log.i(LOG_TAG, "zerdatime " + SystemClock.elapsedRealtime() +
               " - application start");
 
+        final Context oldContext = GeckoAppShell.getApplicationContext();
+        if (oldContext instanceof GeckoApplication) {
+            ((GeckoApplication) oldContext).onDestroy();
+        }
+
+        final Context context = getApplicationContext();
+        GeckoAppShell.ensureCrashHandling();
+        GeckoAppShell.setApplicationContext(context);
+
         // PRNG is a pseudorandom number generator.
         // We need to apply PRNG Fixes before any use of Java Cryptography Architecture.
         // We make use of various JCA methods in data providers for generating GUIDs, as part of FxA
@@ -222,8 +246,7 @@ public class GeckoApplication extends Application {
         GeckoActivityMonitor.getInstance().initialize(this);
         MemoryMonitor.getInstance().init(this);
 
-        final Context context = getApplicationContext();
-        GeckoAppShell.setApplicationContext(context);
+        GeckoAppShell.setHapticFeedbackDelegate(this);
         GeckoAppShell.setGeckoInterface(new GeckoAppShell.GeckoInterface() {
             @Override
             public boolean openUriExternal(final String targetURI, final String mimeType,
@@ -277,18 +300,45 @@ public class GeckoApplication extends Application {
 
         IntentHelper.init();
 
-        final EventListener listener = new EventListener();
-        EventDispatcher.getInstance().registerUiThreadListener(listener,
+        EventDispatcher.getInstance().registerGeckoThreadListener(mListener,
+                "Distribution:GetDirectories",
+                null);
+        EventDispatcher.getInstance().registerUiThreadListener(mListener,
                 "Gecko:Exited",
                 "RuntimePermissions:Check",
                 "Snackbar:Show",
                 "Share:Text",
                 null);
-        EventDispatcher.getInstance().registerBackgroundThreadListener(listener,
+        EventDispatcher.getInstance().registerBackgroundThreadListener(mListener,
+                "Bookmark:Insert",
+                "Image:SetAs",
                 "Profile:Create",
                 null);
 
         super.onCreate();
+    }
+
+    /**
+     * May be called when a new GeckoApplication object
+     * replaces an old one due to assets change.
+     */
+    private void onDestroy() {
+        EventDispatcher.getInstance().unregisterGeckoThreadListener(mListener,
+                "Distribution:GetDirectories",
+                null);
+        EventDispatcher.getInstance().unregisterUiThreadListener(mListener,
+                "Gecko:Exited",
+                "RuntimePermissions:Check",
+                "Snackbar:Show",
+                "Share:Text",
+                null);
+        EventDispatcher.getInstance().unregisterBackgroundThreadListener(mListener,
+                "Bookmark:Insert",
+                "Image:SetAs",
+                "Profile:Create",
+                null);
+
+        GeckoService.unregister();
     }
 
     public void onDelayedStartup() {
@@ -315,12 +365,6 @@ public class GeckoApplication extends Application {
         GeckoAccessibility.setAccessibilityManagerListeners(this);
 
         AudioFocusAgent.getInstance().attachToContext(this);
-
-        RemoteManager.setCrashReporter(new RemoteManager.ICrashReporter() {
-            public void reportDecodingProcessCrash() {
-                Telemetry.addToHistogram(MEDIA_DECODING_PROCESS_CRASH, 1);
-            }
-        });
     }
 
     private class EventListener implements BundleEventListener
@@ -465,6 +509,35 @@ public class GeckoApplication extends Application {
                         .fromEvent(message)
                         .callback(callback)
                         .buildAndShow();
+
+            } else if ("Distribution:GetDirectories".equals(event)) {
+                callback.sendSuccess(Distribution.getDistributionDirectories());
+
+            } else if ("Bookmark:Insert".equals(event)) {
+                final Context context = GeckoAppShell.getApplicationContext();
+                final BrowserDB db = BrowserDB.from(GeckoThread.getActiveProfile());
+                final boolean bookmarkAdded = db.addBookmark(context.getContentResolver(),
+                                                             message.getString("title"),
+                                                             message.getString("url"));
+                final int resId = bookmarkAdded ? R.string.bookmark_added
+                                                : R.string.bookmark_already_added;
+                ThreadUtils.postToUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        final Activity currentActivity =
+                                GeckoActivityMonitor.getInstance().getCurrentActivity();
+                        if (currentActivity == null) {
+                            return;
+                        }
+                        SnackbarBuilder.builder(currentActivity)
+                                .message(resId)
+                                .duration(Snackbar.LENGTH_LONG)
+                                .buildAndShow();
+                    }
+                });
+
+            } else if ("Image:SetAs".equals(event)) {
+                setImageAs(message.getString("url"));
             }
         }
     }
@@ -479,6 +552,13 @@ public class GeckoApplication extends Application {
 
     public void prepareLightweightTheme() {
         mLightweightTheme = new LightweightTheme(this);
+    }
+
+    public static void createShortcut() {
+        final Tab selectedTab = Tabs.getInstance().getSelectedTab();
+        if (selectedTab != null) {
+            createShortcut(selectedTab.getTitle(), selectedTab.getURL());
+        }
     }
 
     // Creates a homescreen shortcut for a web page.
@@ -542,5 +622,163 @@ public class GeckoApplication extends Application {
                               TelemetryContract.Method.CONTEXT_MENU,
                               "pwa_add_to_launcher");
         ShortcutUtils.createHomescreenIcon(shortcutIntent, aTitle, aURI, aIcon);
+    }
+
+    /* package */ static void showSetImageResult(final boolean success, final int message,
+                                           final String path) {
+        ThreadUtils.postToUiThread(new Runnable() {
+            @Override
+            public void run() {
+                final Activity currentActivity =
+                        GeckoActivityMonitor.getInstance().getCurrentActivity();
+                if (currentActivity == null) {
+                    return;
+                }
+
+                if (!success) {
+                    SnackbarBuilder.builder(currentActivity)
+                            .message(message)
+                            .duration(Snackbar.LENGTH_LONG)
+                            .buildAndShow();
+                    return;
+                }
+
+                final Intent intent = new Intent(Intent.ACTION_ATTACH_DATA);
+                intent.addCategory(Intent.CATEGORY_DEFAULT);
+                intent.setData(Uri.parse(path));
+
+                // Removes the image from storage once the chooser activity ends.
+                final Context context = GeckoAppShell.getApplicationContext();
+                final Intent chooser = Intent.createChooser(intent,
+                                                            context.getString(message));
+                ActivityResultHandler handler = new ActivityResultHandler() {
+                    @Override
+                    public void onActivityResult(int resultCode, Intent data) {
+                        context.getContentResolver().delete(intent.getData(), null, null);
+                    }
+                };
+                ActivityHandlerHelper.startIntentForActivity(currentActivity, chooser,
+                                                             handler);
+            }
+        });
+    }
+
+    // Checks the necessary permissions before attempting to download and
+    // set the image as wallpaper.
+    private static void setImageAs(final String aSrc) {
+        final Activity currentActivity =
+                GeckoActivityMonitor.getInstance().getCurrentActivity();
+        final Context context = (currentActivity != null) ?
+                currentActivity : GeckoAppShell.getApplicationContext();
+        Permissions
+                .from(context)
+                .doNotPromptIf(currentActivity == null)
+                .onBackgroundThread()
+                .withPermissions(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                .andFallback(new Runnable() {
+                    @Override
+                    public void run() {
+                        showSetImageResult(/* success */ false,
+                                           R.string.set_image_path_fail, null);
+                    }
+                })
+                .run(new Runnable() {
+                    @Override
+                    public void run() {
+                        downloadImageForSetImage(aSrc);
+                    }
+                });
+    }
+
+
+    /**
+     * Downloads the image given by <code>aSrc</code> synchronously and
+     * then displays the Chooser activity to set the image as wallpaper.
+     *
+     * @param aSrc The URI to download the image from.
+     */
+    private static void downloadImageForSetImage(final String aSrc) {
+        // Network access from the main thread can cause a StrictMode crash on release builds.
+        ThreadUtils.assertOnBackgroundThread();
+
+        final boolean isDataURI = aSrc.startsWith("data:");
+        Bitmap image = null;
+        InputStream is = null;
+        ByteArrayOutputStream os = null;
+        try {
+            if (isDataURI) {
+                int dataStart = aSrc.indexOf(",");
+                byte[] buf = Base64.decode(aSrc.substring(dataStart + 1), Base64.DEFAULT);
+                image = BitmapUtils.decodeByteArray(buf);
+            } else {
+                int byteRead;
+                byte[] buf = new byte[4192];
+                os = new ByteArrayOutputStream();
+                URL url = new URL(aSrc);
+                is = url.openStream();
+
+                // Cannot read from same stream twice. Also, InputStream from
+                // URL does not support reset. So converting to byte array.
+
+                while ((byteRead = is.read(buf)) != -1) {
+                    os.write(buf, 0, byteRead);
+                }
+                byte[] imgBuffer = os.toByteArray();
+                image = BitmapUtils.decodeByteArray(imgBuffer);
+            }
+
+            if (image != null) {
+                // Some devices don't have a DCIM folder and the
+                // Media.insertImage call will fail.
+                final File dcimDir = Environment.getExternalStoragePublicDirectory(
+                        Environment.DIRECTORY_PICTURES);
+                if (!dcimDir.mkdirs() && !dcimDir.isDirectory()) {
+                    showSetImageResult(/* success */ false,
+                                       R.string.set_image_path_fail, null);
+                    return;
+                }
+
+                final Context context = GeckoAppShell.getApplicationContext();
+                final String path = MediaStore.Images.Media.insertImage(
+                        context.getContentResolver(), image, null, null);
+                if (path == null) {
+                    showSetImageResult(/* success */ false,
+                                       R.string.set_image_path_fail, null);
+                    return;
+                }
+                showSetImageResult(/* success */ true,
+                                   R.string.set_image_chooser_title, path);
+            } else {
+                showSetImageResult(/* success */ false, R.string.set_image_fail, null);
+            }
+        } catch (final OutOfMemoryError ome) {
+            Log.e(LOG_TAG, "Out of Memory when converting to byte array", ome);
+        } catch (final IOException ioe) {
+            Log.e(LOG_TAG, "I/O Exception while setting wallpaper", ioe);
+        } finally {
+            if (is != null) {
+                try {
+                    is.close();
+                } catch (final IOException ioe) {
+                    Log.w(LOG_TAG, "I/O Exception while closing stream", ioe);
+                }
+            }
+            if (os != null) {
+                try {
+                    os.close();
+                } catch (final IOException ioe) {
+                    Log.w(LOG_TAG, "I/O Exception while closing stream", ioe);
+                }
+            }
+        }
+    }
+
+    @Override // HapticFeedbackDelegate
+    public void performHapticFeedback(final int effect) {
+        final Activity currentActivity =
+                GeckoActivityMonitor.getInstance().getCurrentActivity();
+        if (currentActivity != null) {
+            currentActivity.getWindow().getDecorView().performHapticFeedback(effect);
+        }
     }
 }

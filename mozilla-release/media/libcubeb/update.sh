@@ -74,12 +74,3 @@ patch -p3 < disable-assert.patch
 
 echo "Applying prefer-pulse-rust.patch on top of $rev"
 patch -p3 < prefer-pulse-rust.patch
-
-echo "Applying pulse-handle-no-sinks.patch on top of $rev"
-patch -p3 < pulse-handle-no-sinks.patch
-
-echo "Applying bug-1405258-beta-uplift.patch on top of $rev"
-patch -p1 < bug-1405258-beta-uplift.patch
-
-echo "Applying bug-1411866-beta-uplift.patch on top of $rev"
-patch -p3 < bug-1411866-beta-uplift.patch

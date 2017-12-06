@@ -226,10 +226,16 @@ ICStub::trace(JSTracer* trc)
     // because the regular monitored stubs will always have a monitored fallback stub
     // that references the same stub chain.
     if (isMonitoredFallback()) {
-        ICTypeMonitor_Fallback* lastMonStub = toMonitoredFallbackStub()->fallbackMonitorStub();
-        for (ICStubConstIterator iter(lastMonStub->firstMonitorStub()); !iter.atEnd(); iter++) {
-            MOZ_ASSERT_IF(iter->next() == nullptr, *iter == lastMonStub);
-            iter->trace(trc);
+        ICTypeMonitor_Fallback* lastMonStub =
+            toMonitoredFallbackStub()->maybeFallbackMonitorStub();
+        if (lastMonStub) {
+            for (ICStubConstIterator iter(lastMonStub->firstMonitorStub());
+                 !iter.atEnd();
+                 iter++)
+            {
+                MOZ_ASSERT_IF(iter->next() == nullptr, *iter == lastMonStub);
+                iter->trace(trc);
+            }
         }
     }
 
@@ -366,7 +372,9 @@ ICFallbackStub::unlinkStub(Zone* zone, ICStub* prev, ICStub* stub)
         // We just have to reset its firstMonitorStub_ field to avoid a stale
         // pointer when purgeOptimizedStubs destroys all optimized monitor
         // stubs (unlinked stubs won't be updated).
-        ICTypeMonitor_Fallback* monitorFallback = toMonitoredFallbackStub()->fallbackMonitorStub();
+        ICTypeMonitor_Fallback* monitorFallback =
+            toMonitoredFallbackStub()->maybeFallbackMonitorStub();
+        MOZ_ASSERT(monitorFallback);
         stub->toMonitoredStub()->resetFirstMonitorStub(monitorFallback);
     }
 
@@ -457,11 +465,12 @@ ICMonitoredStub::ICMonitoredStub(Kind kind, JitCode* stubCode, ICStub* firstMoni
 }
 
 bool
-ICMonitoredFallbackStub::initMonitoringChain(JSContext* cx, ICStubSpace* space)
+ICMonitoredFallbackStub::initMonitoringChain(JSContext* cx, JSScript* script)
 {
     MOZ_ASSERT(fallbackMonitorStub_ == nullptr);
 
     ICTypeMonitor_Fallback::Compiler compiler(cx, this);
+    ICStubSpace* space = script->baselineScript()->fallbackStubSpace();
     ICTypeMonitor_Fallback* stub = compiler.getStub(space);
     if (!stub)
         return false;
@@ -473,7 +482,10 @@ bool
 ICMonitoredFallbackStub::addMonitorStubForValue(JSContext* cx, BaselineFrame* frame,
                                                 StackTypeSet* types, HandleValue val)
 {
-    return fallbackMonitorStub_->addMonitorStubForValue(cx, frame, types, val);
+    ICTypeMonitor_Fallback* typeMonitorFallback = getFallbackMonitorStub(cx, frame->script());
+    if (!typeMonitorFallback)
+        return false;
+    return typeMonitorFallback->addMonitorStubForValue(cx, frame, types, val);
 }
 
 bool
@@ -1910,24 +1922,6 @@ ICCompare_Int32WithBoolean::Compiler::generateStubCode(MacroAssembler& masm)
 // GetProp_Fallback
 //
 
-// Return whether obj is in some PreliminaryObjectArray and has a structure
-// that might change in the future.
-bool
-IsPreliminaryObject(JSObject* obj)
-{
-    if (obj->isSingleton())
-        return false;
-
-    TypeNewScript* newScript = obj->group()->newScript();
-    if (newScript && !newScript->analyzed())
-        return true;
-
-    if (obj->group()->maybePreliminaryObjects())
-        return true;
-
-    return false;
-}
-
 void
 StripPreliminaryObjectStubs(JSContext* cx, ICFallbackStub* stub)
 {
@@ -1948,62 +1942,6 @@ StripPreliminaryObjectStubs(JSContext* cx, ICFallbackStub* stub)
         else if (iter->isCacheIR_Updated() && iter->toCacheIR_Updated()->hasPreliminaryObject())
             iter.unlink(cx);
     }
-}
-
-bool
-CheckHasNoSuchOwnProperty(JSContext* cx, JSObject* obj, jsid id)
-{
-    if (obj->isNative()) {
-        // Don't handle proto chains with resolve hooks.
-        if (ClassMayResolveId(cx->names(), obj->getClass(), id, obj))
-            return false;
-        if (obj->as<NativeObject>().contains(cx, id))
-            return false;
-    } else if (obj->is<UnboxedPlainObject>()) {
-        if (obj->as<UnboxedPlainObject>().containsUnboxedOrExpandoProperty(cx, id))
-            return false;
-    } else if (obj->is<UnboxedArrayObject>()) {
-        if (JSID_IS_ATOM(id, cx->names().length))
-            return false;
-    } else if (obj->is<TypedObject>()) {
-        if (obj->as<TypedObject>().typeDescr().hasProperty(cx->names(), id))
-            return false;
-    } else {
-        return false;
-    }
-
-    return true;
-}
-
-bool
-CheckHasNoSuchProperty(JSContext* cx, JSObject* obj, jsid id,
-                       JSObject** lastProto, size_t* protoChainDepthOut)
-{
-    size_t depth = 0;
-    JSObject* curObj = obj;
-    while (curObj) {
-        if (!CheckHasNoSuchOwnProperty(cx, curObj, id))
-            return false;
-
-        if (!curObj->isNative()) {
-            // Non-native objects are only handled as the original receiver.
-            if (curObj != obj)
-                return false;
-        }
-
-        JSObject* proto = curObj->staticPrototype();
-        if (!proto)
-            break;
-
-        curObj = proto;
-        depth++;
-    }
-
-    if (lastProto)
-        *lastProto = curObj;
-    if (protoChainDepthOut)
-        *protoChainDepthOut = depth;
-    return true;
 }
 
 static bool
@@ -2236,7 +2174,8 @@ ICGetProp_Fallback::Compiler::generateStubCode(MacroAssembler& masm)
 
     // When we get here, ICStubReg contains the ICGetProp_Fallback stub,
     // which we can't use to enter the TypeMonitor IC, because it's a MonitoredFallbackStub
-    // instead of a MonitoredStub. So, we cheat.
+    // instead of a MonitoredStub. So, we cheat. Note that we must have a
+    // non-null fallbackMonitorStub here because InitFromBailout delazifies.
     masm.loadPtr(Address(ICStubReg, ICMonitoredFallbackStub::offsetOfFallbackMonitorStub()),
                  ICStubReg);
     EmitEnterTypeMonitorIC(masm, ICTypeMonitor_Fallback::offsetOfFirstMonitorStub());
@@ -2253,16 +2192,6 @@ ICGetProp_Fallback::Compiler::postGenerateStubCode(MacroAssembler& masm, Handle<
         void* address = code->raw() + bailoutReturnOffset_.offset();
         cx->compartment()->jitCompartment()->initBailoutReturnAddr(address, getKey(), kind);
     }
-}
-
-void
-CheckForTypedObjectWithDetachedStorage(JSContext* cx, MacroAssembler& masm, Label* failure)
-{
-    // All stubs manipulating typed objects must check the compartment-wide
-    // flag indicating whether their underlying storage might be detached, to
-    // bail out if needed.
-    int32_t* address = &cx->compartment()->detachedTypedObjects;
-    masm.branch32(Assembler::NotEqual, AbsoluteAddress(address), Imm32(0), failure);
 }
 
 void

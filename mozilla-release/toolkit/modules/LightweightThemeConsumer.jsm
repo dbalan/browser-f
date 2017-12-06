@@ -19,7 +19,10 @@ const kCSSVarsMap = new Map([
   ["--toolbar-bgcolor", "toolbarColor"],
   ["--toolbar-color", "toolbar_text"],
   ["--url-and-searchbar-background-color", "toolbar_field"],
-  ["--url-and-searchbar-color", "toolbar_field_text"]
+  ["--url-and-searchbar-color", "toolbar_field_text"],
+  ["--tabs-border-color", "toolbar_top_separator"],
+  ["--toolbox-border-bottom-color", "toolbar_bottom_separator"],
+  ["--urlbar-separator-color", "toolbar_vertical_separator"],
 ]);
 
 this.LightweightThemeConsumer =
@@ -37,7 +40,7 @@ this.LightweightThemeConsumer =
   Cu.import("resource://gre/modules/LightweightThemeManager.jsm", temp);
   this._update(temp.LightweightThemeManager.currentThemeForDisplay);
   this._win.addEventListener("resize", this);
-}
+};
 
 LightweightThemeConsumer.prototype = {
   _lastData: null,
@@ -55,7 +58,7 @@ LightweightThemeConsumer.prototype = {
 
   disable() {
     // Dance to keep the data, but reset the applied styles:
-    let lastData = this._lastData
+    let lastData = this._lastData;
     this._update(null);
     this._enabled = false;
     this._lastData = lastData;
@@ -175,7 +178,7 @@ LightweightThemeConsumer.prototype = {
     }
     return cssColor;
   }
-}
+};
 
 function _setImage(aRoot, aActive, aVariableName, aURLs) {
   if (aURLs && !Array.isArray(aURLs)) {

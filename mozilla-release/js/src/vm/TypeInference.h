@@ -18,7 +18,6 @@
 #include "ds/IdValuePair.h"
 #include "ds/LifoAlloc.h"
 #include "gc/Barrier.h"
-#include "gc/Marking.h"
 #include "jit/IonTypes.h"
 #include "js/UbiNode.h"
 #include "js/Utility.h"
@@ -382,8 +381,8 @@ class TypeSet
 
     static const char* NonObjectTypeString(Type type);
 
-    static const char* TypeString(Type type);
-    static const char* ObjectGroupString(ObjectGroup* group);
+    static UniqueChars TypeString(Type type);
+    static UniqueChars ObjectGroupString(ObjectGroup* group);
 
   protected:
     /* Flags for this type set. */
@@ -905,8 +904,8 @@ class PreliminaryObjectArray
         mozilla::PodZero(this);
     }
 
-    void registerNewObject(JSObject* res);
-    void unregisterObject(JSObject* obj);
+    void registerNewObject(PlainObject* res);
+    void unregisterObject(PlainObject* obj);
 
     JSObject* get(size_t i) const {
         MOZ_ASSERT(i < COUNT);

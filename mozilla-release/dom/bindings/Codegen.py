@@ -50,6 +50,9 @@ def mayUseXrayExpandoSlots(descriptor, attr):
 
 
 def toStringBool(arg):
+    """
+    Converts IDL/Python Boolean (True/False) to C++ Boolean (true/false)
+    """
     return str(not not arg).lower()
 
 
@@ -681,7 +684,7 @@ class CGPrototypeJSClass(CGThing):
 
 def NeedsGeneratedHasInstance(descriptor):
     assert descriptor.interface.hasInterfaceObject()
-    return descriptor.hasXPConnectImpls or descriptor.interface.isConsequential()
+    return descriptor.hasXPConnectImpls
 
 
 def InterfaceObjectProtoGetter(descriptor, forXrays=False):
@@ -2007,7 +2010,8 @@ class CGHasInstanceHook(CGAbstractStaticMethod):
         return self.generate_code()
 
     def generate_code(self):
-        header = dedent("""
+        return fill(
+            """
             JS::CallArgs args = JS::CallArgsFromVp(argc, vp);
             if (!args.get(0).isObject()) {
               args.rval().setBoolean(false);
@@ -2015,60 +2019,24 @@ class CGHasInstanceHook(CGAbstractStaticMethod):
             }
 
             JS::Rooted<JSObject*> instance(cx, &args[0].toObject());
-            """)
-        if self.descriptor.interface.hasInterfacePrototypeObject():
-            return (
-                header +
-                fill(
-                    """
 
-                    static_assert(IsBaseOf<nsISupports, ${nativeType}>::value,
-                                  "HasInstance only works for nsISupports-based classes.");
+            static_assert(IsBaseOf<nsISupports, ${nativeType}>::value,
+                          "HasInstance only works for nsISupports-based classes.");
 
-                    bool ok = InterfaceHasInstance(cx, argc, vp);
-                    if (!ok || args.rval().toBoolean()) {
-                      return ok;
-                    }
-
-                    // FIXME Limit this to chrome by checking xpc::AccessCheck::isChrome(obj).
-                    nsCOMPtr<nsISupports> native =
-                      xpc::UnwrapReflectorToISupports(js::UncheckedUnwrap(instance, /* stopAtWindowProxy = */ false));
-                    nsCOMPtr<nsIDOM${name}> qiResult = do_QueryInterface(native);
-                    args.rval().setBoolean(!!qiResult);
-                    return true;
-                    """,
-                    nativeType=self.descriptor.nativeType,
-                    name=self.descriptor.interface.identifier.name))
-
-        hasInstanceCode = dedent("""
-
-            const DOMJSClass* domClass = GetDOMClass(js::UncheckedUnwrap(instance, /* stopAtWindowProxy = */ false));
-            if (!domClass) {
-              // Not a DOM object, so certainly not an instance of this interface
-              args.rval().setBoolean(false);
-              return true;
+            bool ok = InterfaceHasInstance(cx, argc, vp);
+            if (!ok || args.rval().toBoolean()) {
+              return ok;
             }
-            """)
-        if self.descriptor.interface.identifier.name == "ChromeWindow":
-            setRval = "args.rval().setBoolean(UnwrapDOMObject<nsGlobalWindow>(js::UncheckedUnwrap(instance, /* stopAtWindowProxy = */ false))->IsChromeWindow())"
-        else:
-            setRval = "args.rval().setBoolean(true)"
-        # Sort interaces implementing self by name so we get stable output.
-        for iface in sorted(self.descriptor.interface.interfacesImplementingSelf,
-                            key=lambda iface: iface.identifier.name):
-            hasInstanceCode += fill(
-                """
 
-                if (domClass->mInterfaceChain[PrototypeTraits<prototypes::id::${name}>::Depth] == prototypes::id::${name}) {
-                  ${setRval};
-                  return true;
-                }
-                """,
-                name=iface.identifier.name,
-                setRval=setRval)
-        hasInstanceCode += ("args.rval().setBoolean(false);\n"
-                            "return true;\n")
-        return header + hasInstanceCode
+            // FIXME Limit this to chrome by checking xpc::AccessCheck::isChrome(obj).
+            nsCOMPtr<nsISupports> native =
+              xpc::UnwrapReflectorToISupports(js::UncheckedUnwrap(instance, /* stopAtWindowProxy = */ false));
+            nsCOMPtr<nsIDOM${name}> qiResult = do_QueryInterface(native);
+            args.rval().setBoolean(!!qiResult);
+            return true;
+            """,
+            nativeType=self.descriptor.nativeType,
+            name=self.descriptor.interface.identifier.name)
 
 
 def isChromeOnly(m):
@@ -2732,8 +2700,7 @@ class AttrDefiner(PropertyDefiner):
 
         def flags(attr):
             unforgeable = " | JSPROP_PERMANENT" if self.unforgeable else ""
-            enumerable = " | %s" % EnumerabilityFlags(attr)
-            return ("JSPROP_SHARED" + enumerable + unforgeable)
+            return EnumerabilityFlags(attr) + unforgeable
 
         def getter(attr):
             if self.static:
@@ -2867,6 +2834,46 @@ class PropertyArrays():
         for array in self.arrayNames():
             define += str(getattr(self, array))
         return define
+
+
+class CGConstDefinition(CGThing):
+    """
+    Given a const member of an interface, return the C++ static const definition
+    for the member. Should be part of the interface namespace in the header
+    file.
+    """
+    def __init__(self, member):
+        assert (member.isConst() and
+                member.value.type.isPrimitive() and
+                not member.value.type.nullable())
+
+        name = CppKeywords.checkMethodName(IDLToCIdentifier(member.identifier.name))
+        tag = member.value.type.tag()
+        value = member.value.value
+        if tag == IDLType.Tags.bool:
+            value = toStringBool(member.value.value)
+        self.const = "static const %s %s = %s;" % (builtinNames[tag],
+                                                   name,
+                                                   value)
+        if member.getExtendedAttribute("NeedsWindowsUndef"):
+            self.const = fill(
+                """
+                #ifdef XP_WIN
+                #undef ${name}
+                #endif // XP_WIN
+                ${constDecl}
+                """,
+                name=name,
+                constDecl=self.const)
+
+    def declare(self):
+        return self.const
+
+    def define(self):
+        return ""
+
+    def deps(self):
+        return []
 
 
 class CGNativeProperties(CGList):
@@ -3476,10 +3483,10 @@ class CGGetNamedPropertiesObjectMethod(CGAbstractStaticMethod):
                          "Expected ${nativeType}::CreateNamedPropertiesObject to return a named properties object");
               MOZ_ASSERT(clasp->mNativeHooks,
                          "The named properties object for ${nativeType} should have NativePropertyHooks.");
-              MOZ_ASSERT(clasp->mNativeHooks->mResolveOwnProperty,
-                         "Don't know how to resolve the properties of the named properties object for ${nativeType}.");
-              MOZ_ASSERT(clasp->mNativeHooks->mEnumerateOwnProperties,
-                         "Don't know how to enumerate the properties of the named properties object for ${nativeType}.");
+              MOZ_ASSERT(!clasp->mNativeHooks->mResolveOwnProperty,
+                         "Shouldn't resolve the properties of the named properties object for ${nativeType} for Xrays.");
+              MOZ_ASSERT(!clasp->mNativeHooks->mEnumerateOwnProperties,
+                         "Shouldn't enumerate the properties of the named properties object for ${nativeType} for Xrays.");
             }
             return namedPropertiesObject.get();
             """,
@@ -6411,7 +6418,7 @@ def convertConstIDLValueToJSVal(value):
     if tag in [IDLType.Tags.int64, IDLType.Tags.uint64]:
         return "JS::CanonicalizedDoubleValue(%s)" % numericValue(tag, value.value)
     if tag == IDLType.Tags.bool:
-        return "JS::BooleanValue(true)" if value.value else "JS::BooleanValue(false)"
+        return "JS::BooleanValue(%s)" % (toStringBool(value.value))
     if tag in [IDLType.Tags.float, IDLType.Tags.double]:
         return "JS::CanonicalizedDoubleValue(%s)" % (value.value)
     raise TypeError("Const value of unhandled type: %s" % value.type)
@@ -6912,7 +6919,7 @@ def getWrapTemplateForType(type, descriptorProvider, result, successCode,
         # Callbacks can store null if we nuked the compartments their
         # objects lived in.
         wrapCode = setObjectOrNull(
-            "GetCallbackFromCallbackObject(%(result)s)",
+            "GetCallbackFromCallbackObject(cx, %(result)s)",
             wrapAsType=type)
         if type.nullable():
             wrapCode = (
@@ -11391,7 +11398,7 @@ class CGProxySpecialOperation(CGPerSignatureCall):
                                     len(arguments), resultVar=resultVar,
                                     objectName="proxy")
 
-        if operation.isSetter() or operation.isCreator():
+        if operation.isSetter():
             # arguments[0] is the index or name of the item that we're setting.
             argument = arguments[1]
             info = getJSToNativeConversionInfo(
@@ -11818,8 +11825,6 @@ class CGDOMJSProxyHandler_defineProperty(ClassMethod):
 
         indexedSetter = self.descriptor.operations['IndexedSetter']
         if indexedSetter:
-            if self.descriptor.operations['IndexedCreator'] is not indexedSetter:
-                raise TypeError("Can't handle creator that's different from the setter")
             set += fill(
                 """
                 uint32_t index = GetArrayIndexFromId(cx, id);
@@ -11850,8 +11855,6 @@ class CGDOMJSProxyHandler_defineProperty(ClassMethod):
                 raise TypeError("Can't handle a named setter on an interface "
                                 "that has unforgeables.  Figure out how that "
                                 "should work!")
-            if self.descriptor.operations['NamedCreator'] is not namedSetter:
-                raise TypeError("Can't handle creator that's different from the setter")
             # If we support indexed properties, we won't get down here for
             # indices, so we can just do our setter unconditionally here.
             set += fill(
@@ -12330,9 +12333,6 @@ class CGDOMJSProxyHandler_setCustom(ClassMethod):
             if self.descriptor.supportsIndexedProperties():
                 raise ValueError("In interface " + self.descriptor.name + ": " +
                                  "Can't cope with [OverrideBuiltins] and an indexed getter")
-            if self.descriptor.operations['NamedCreator'] is not namedSetter:
-                raise ValueError("In interface " + self.descriptor.name + ": " +
-                                 "Can't cope with named setter that is not also a named creator")
             if self.descriptor.hasUnforgeableMembers:
                 raise ValueError("In interface " + self.descriptor.name + ": " +
                                  "Can't cope with [OverrideBuiltins] and unforgeable members")
@@ -12347,10 +12347,6 @@ class CGDOMJSProxyHandler_setCustom(ClassMethod):
         # ahead and call it and have done.
         indexedSetter = self.descriptor.operations['IndexedSetter']
         if indexedSetter is not None:
-            if self.descriptor.operations['IndexedCreator'] is not indexedSetter:
-                raise ValueError("In interface " + self.descriptor.name + ": " +
-                                 "Can't cope with indexed setter that is not " +
-                                 "also an indexed creator")
             setIndexed = fill(
                 """
                 uint32_t index = GetArrayIndexFromId(cx, id);
@@ -12806,6 +12802,8 @@ class CGDescriptor(CGThing):
                 if (not m.isStatic() and
                     descriptor.interface.hasInterfacePrototypeObject()):
                     cgThings.append(CGMemberJITInfo(descriptor, m))
+            if m.isConst() and m.type.isPrimitive():
+                cgThings.append(CGConstDefinition(m))
 
             hasMethod = hasMethod or props.isGenericMethod
             hasPromiseReturningMethod = (hasPromiseReturningMethod or
@@ -13592,9 +13590,9 @@ class CGDictionary(CGThing):
         # continues to match the list in test_Object.prototype_props.html
         if (member.identifier.name in
             ["constructor", "toSource", "toString", "toLocaleString", "valueOf",
-             "watch", "unwatch", "hasOwnProperty", "isPrototypeOf",
-             "propertyIsEnumerable", "__defineGetter__", "__defineSetter__",
-             "__lookupGetter__", "__lookupSetter__", "__proto__"]):
+             "hasOwnProperty", "isPrototypeOf", "propertyIsEnumerable",
+             "__defineGetter__", "__defineSetter__", "__lookupGetter__",
+             "__lookupSetter__", "__proto__"]):
             raise TypeError("'%s' member of %s dictionary shadows "
                             "a property of Object.prototype, and Xrays to "
                             "Object can't handle that.\n"
@@ -15006,9 +15004,6 @@ class CGBindingImplClass(CGClass):
         # Now do the special operations
         def appendSpecialOperation(name, op):
             if op is None:
-                return
-            if name == "IndexedCreator" or name == "NamedCreator":
-                # These are identical to the setters
                 return
             assert len(op.signatures()) == 1
             returnType, args = op.signatures()[0]

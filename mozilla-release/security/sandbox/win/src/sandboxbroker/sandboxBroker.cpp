@@ -7,6 +7,7 @@
 #include "sandboxBroker.h"
 
 #include <string>
+#include <vector>
 
 #include "base/win/windows_version.h"
 #include "mozilla/Assertions.h"
@@ -28,6 +29,28 @@
 #include "sandbox/win/src/security_level.h"
 #include "WinUtils.h"
 
+// This list of DLLs have been found to cause instability in sandboxed child
+// processes and so they will be unloaded if they attempt to load.
+const std::vector<std::wstring> kDllsToUnload = {
+  // Symantec Corporation (bug 1400637)
+  L"ffm64.dll",
+  L"ffm.dll",
+  L"prntm64.dll",
+
+  // HitmanPro - SurfRight now part of Sophos (bug 1400637)
+  L"hmpalert.dll",
+
+  // Avast Antivirus (bug 1400637)
+  L"snxhk64.dll",
+  L"snxhk.dll",
+
+  // Webroot SecureAnywhere (bug 1400637)
+  L"wrusr.dll",
+
+  // Comodo Internet Security (bug 1400637)
+  L"guard32.dll",
+};
+
 namespace mozilla
 {
 
@@ -46,6 +69,9 @@ static UniquePtr<nsString> sContentTempDir;
 static UniquePtr<nsString> sRoamingAppDataDir;
 static UniquePtr<nsString> sLocalAppDataDir;
 static UniquePtr<nsString> sUserExtensionsDevDir;
+#ifdef ENABLE_SYSTEM_EXTENSION_DIRS
+static UniquePtr<nsString> sUserExtensionsDir;
+#endif
 
 static LazyLogModule sSandboxBrokerLog("SandboxBroker");
 
@@ -124,6 +150,9 @@ SandboxBroker::CacheRulesDirectories()
   CacheDirAndAutoClear(dirSvc, NS_WIN_APPDATA_DIR, &sRoamingAppDataDir);
   CacheDirAndAutoClear(dirSvc, NS_WIN_LOCAL_APPDATA_DIR, &sLocalAppDataDir);
   CacheDirAndAutoClear(dirSvc, XRE_USER_SYS_EXTENSION_DEV_DIR, &sUserExtensionsDevDir);
+#ifdef ENABLE_SYSTEM_EXTENSION_DIRS
+  CacheDirAndAutoClear(dirSvc, XRE_USER_SYS_EXTENSION_DIR, &sUserExtensionsDir);
+#endif
 }
 
 SandboxBroker::SandboxBroker()
@@ -205,9 +234,26 @@ SandboxBroker::LaunchApp(const wchar_t *aPath,
                      sandbox::TargetPolicy::FILES_ALLOW_ANY, logFileName);
   }
 
+  // Add DLLs to the policy that have been found to cause instability with the
+  // sandbox, so that they will be unloaded when they attempt to load.
+  sandbox::ResultCode result;
+  for (std::wstring dllToUnload : kDllsToUnload) {
+    // Similar to Chromium, we only add a DLL if it is loaded in this process.
+    if (::GetModuleHandleW(dllToUnload.c_str())) {
+      result = mPolicy->AddDllToUnload(dllToUnload.c_str());
+      MOZ_RELEASE_ASSERT(sandbox::SBOX_ALL_OK == result,
+                         "AddDllToUnload should never fail, what happened?");
+    }
+  }
+
+  // Add K7 Computing DLL to be blocked even if not loaded in the parent, as we
+  // are still getting crash reports for it.
+  result = mPolicy->AddDllToUnload(L"k7pswsen.dll");
+  MOZ_RELEASE_ASSERT(sandbox::SBOX_ALL_OK == result,
+                     "AddDllToUnload should never fail, what happened?");
+
   // Ceate the sandboxed process
   PROCESS_INFORMATION targetInfo = {0};
-  sandbox::ResultCode result;
   sandbox::ResultCode last_warning = sandbox::SBOX_ALL_OK;
   DWORD last_error = ERROR_SUCCESS;
   result = sBrokerService->SpawnTarget(aPath, aArguments, mPolicy,
@@ -342,7 +388,7 @@ SetJobLevel(sandbox::TargetPolicy* aPolicy, sandbox::JobLevel aJobLevel,
 
 void
 SandboxBroker::SetSecurityLevelForContentProcess(int32_t aSandboxLevel,
-                                                 base::ChildPrivileges aPrivs)
+                                                 bool aIsFileProcess)
 {
   MOZ_RELEASE_ASSERT(mPolicy, "mPolicy must be set before this call.");
 
@@ -360,8 +406,8 @@ SandboxBroker::SetSecurityLevelForContentProcess(int32_t aSandboxLevel,
     accessTokenLevel = sandbox::USER_LOCKDOWN;
     initialIntegrityLevel = sandbox::INTEGRITY_LEVEL_LOW;
     delayedIntegrityLevel = sandbox::INTEGRITY_LEVEL_UNTRUSTED;
-  } else if (aSandboxLevel >= 10) {
-    jobLevel = sandbox::JOB_RESTRICTED;
+  } else if (aSandboxLevel >= 4) {
+    jobLevel = sandbox::JOB_LOCKDOWN;
     accessTokenLevel = sandbox::USER_LIMITED;
     initialIntegrityLevel = sandbox::INTEGRITY_LEVEL_LOW;
     delayedIntegrityLevel = sandbox::INTEGRITY_LEVEL_LOW;
@@ -382,8 +428,9 @@ SandboxBroker::SetSecurityLevelForContentProcess(int32_t aSandboxLevel,
     delayedIntegrityLevel = sandbox::INTEGRITY_LEVEL_LOW;
   }
 
-  // If PRIVILEGES_FILEREAD required, don't allow settings that block reads.
-  if (aPrivs == base::ChildPrivileges::PRIVILEGES_FILEREAD) {
+  // If the process will handle file: URLs, don't allow settings that
+  // block reads.
+  if (aIsFileProcess) {
     if (accessTokenLevel < sandbox::USER_NON_ADMIN) {
       accessTokenLevel = sandbox::USER_NON_ADMIN;
     }
@@ -429,11 +476,13 @@ SandboxBroker::SetSecurityLevelForContentProcess(int32_t aSandboxLevel,
     sandbox::MITIGATION_DEP |
     sandbox::MITIGATION_EXTENSION_POINT_DISABLE;
 
-  if (aSandboxLevel > 3) {
+  if (aSandboxLevel > 4) {
     result = mPolicy->SetAlternateDesktop(false);
     MOZ_RELEASE_ASSERT(sandbox::SBOX_ALL_OK == result,
                        "Failed to create alternate desktop for sandbox.");
+  }
 
+  if (aSandboxLevel > 3) {
     mitigations |= sandbox::MITIGATION_IMAGE_LOAD_NO_LOW_LABEL;
     // If we're running from a network drive then we can't block loading from
     // remote locations.
@@ -464,8 +513,7 @@ SandboxBroker::SetSecurityLevelForContentProcess(int32_t aSandboxLevel,
 
   // We still have edge cases where the child at low integrity can't read some
   // files, so add a rule to allow read access to everything when required.
-  if (aSandboxLevel == 1 ||
-      aPrivs == base::ChildPrivileges::PRIVILEGES_FILEREAD) {
+  if (aSandboxLevel == 1 || aIsFileProcess) {
     result = mPolicy->AddRule(sandbox::TargetPolicy::SUBSYS_FILES,
                               sandbox::TargetPolicy::FILES_ALLOW_READONLY,
                               L"*");
@@ -476,17 +524,23 @@ SandboxBroker::SetSecurityLevelForContentProcess(int32_t aSandboxLevel,
     AddCachedDirRule(mPolicy, sandbox::TargetPolicy::FILES_ALLOW_READONLY,
                      sBinDir, NS_LITERAL_STRING("\\*"));
 
-    // Add rule to allow read access chrome directory within profile.
+    // Add rule to allow read access to the chrome directory within profile.
     AddCachedDirRule(mPolicy, sandbox::TargetPolicy::FILES_ALLOW_READONLY,
                      sProfileDir, NS_LITERAL_STRING("\\chrome\\*"));
 
-    // Add rule to allow read access extensions directory within profile.
+    // Add rule to allow read access to the extensions directory within profile.
     AddCachedDirRule(mPolicy, sandbox::TargetPolicy::FILES_ALLOW_READONLY,
                      sProfileDir, NS_LITERAL_STRING("\\extensions\\*"));
 
     // Read access to a directory for system extension dev (see bug 1393805)
     AddCachedDirRule(mPolicy, sandbox::TargetPolicy::FILES_ALLOW_READONLY,
                      sUserExtensionsDevDir, NS_LITERAL_STRING("\\*"));
+
+#ifdef ENABLE_SYSTEM_EXTENSION_DIRS
+    // Add rule to allow read access to the per-user extensions directory.
+    AddCachedDirRule(mPolicy, sandbox::TargetPolicy::FILES_ALLOW_READONLY,
+                     sUserExtensionsDir, NS_LITERAL_STRING("\\*"));
+#endif
   }
 
   // Add the policy for the client side of a pipe. It is just a file

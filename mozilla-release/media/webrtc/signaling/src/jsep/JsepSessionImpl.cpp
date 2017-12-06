@@ -17,10 +17,10 @@
 
 #include "mozilla/Move.h"
 #include "mozilla/UniquePtr.h"
+#include "mozilla/Telemetry.h"
 
 #include "webrtc/config.h"
 
-#include "signaling/src/jsep/JsepTrack.h"
 #include "signaling/src/jsep/JsepTrack.h"
 #include "signaling/src/jsep/JsepTransport.h"
 #include "signaling/src/sdp/Sdp.h"
@@ -338,7 +338,7 @@ JsepSessionImpl::SetParameters(const std::string& streamId,
     }
   }
   if (addVideoExt != SdpDirectionAttribute::kInactive) {
-    AddVideoRtpExtension("urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id", addVideoExt);
+    AddVideoRtpExtension(webrtc::RtpExtension::kRtpStreamIdUri, addVideoExt);
   }
 
   it->mTrack->SetJsConstraints(constraints);
@@ -727,6 +727,7 @@ JsepSessionImpl::CreateOffer(const JsepOfferOptions& options,
                              std::string* offer)
 {
   mLastError.clear();
+  mLocalIceIsRestarting = options.mIceRestart.isSome() && *(options.mIceRestart);
 
   if (mState != kJsepStateStable) {
     JSEP_SET_ERROR("Cannot create offer in state " << GetStateStr(mState));
@@ -1534,6 +1535,11 @@ JsepSessionImpl::MakeNegotiatedTrackPair(const SdpMediaSection& remote,
     trackPairOut->mRtcpTransport = transport;
   }
 
+  if (local.GetMediaType() != SdpMediaSection::kApplication) {
+    Telemetry::Accumulate(Telemetry::WEBRTC_RTCP_MUX,
+        transport->mComponents == 1);
+  }
+
   return NS_OK;
 }
 
@@ -1989,6 +1995,15 @@ JsepSessionImpl::ValidateRemoteDescription(const Sdp& description)
     }
 
     bool differ = mSdpHelper.IceCredentialsDiffer(newMsection, oldMsection);
+
+    // Detect bad answer ICE restart when offer doesn't request ICE restart
+    if (mIsOfferer && differ && !mLocalIceIsRestarting) {
+      JSEP_SET_ERROR("Remote description indicates ICE restart but offer did not "
+                     "request ICE restart (new remote description changes either "
+                     "the ice-ufrag or ice-pwd)");
+      return NS_ERROR_INVALID_ARG;
+    }
+
     // Detect whether all the creds are the same or all are different
     if (!iceCredsDiffer.isSome()) {
       // for the first msection capture whether creds are different or same
@@ -2382,12 +2397,15 @@ JsepSessionImpl::SetupDefaultCodecs()
 void
 JsepSessionImpl::SetupDefaultRtpExtensions()
 {
-  AddAudioRtpExtension("urn:ietf:params:rtp-hdrext:ssrc-audio-level",
+  AddAudioRtpExtension(webrtc::RtpExtension::kAudioLevelUri,
                        SdpDirectionAttribute::Direction::kSendonly);
-  AddVideoRtpExtension(
-    "http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time",
+  AddAudioRtpExtension(webrtc::RtpExtension::kMIdUri,
                        SdpDirectionAttribute::Direction::kSendrecv);
-  AddVideoRtpExtension("urn:ietf:params:rtp-hdrext:toffset",
+  AddVideoRtpExtension(webrtc::RtpExtension::kAbsSendTimeUri,
+                       SdpDirectionAttribute::Direction::kSendrecv);
+  AddVideoRtpExtension(webrtc::RtpExtension::kTimestampOffsetUri,
+                       SdpDirectionAttribute::Direction::kSendrecv);
+  AddVideoRtpExtension(webrtc::RtpExtension::kMIdUri,
                        SdpDirectionAttribute::Direction::kSendrecv);
 }
 
