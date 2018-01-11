@@ -1,0 +1,15 @@
+version: 2
+jobs:
+  build:
+    docker:
+      - image: base/archlinux
+    steps:
+      - checkout
+      - run:
+          name: System Setup
+          command: pacman -Syu --noconfirm
+      - run:
+          name: Install dependencies
+          command: pacman -S devel
+          
+
