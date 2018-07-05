@@ -30,18 +30,6 @@ do
   shift # Consume current argument
 done
 
-if [[ "$OSTYPE" == "linux-gnu" ]]; then
-  IS_LINUX=true
-  echo 'Linux OS detected'
-elif [[ "$OSTYPE" == "darwin"* ]]; then
-  IS_MAC_OS=true
-  echo 'Mac OS detected'
-elif [[ "$OSTYPE" == "cygwin" || "$OSTYPE" == "msys" ]]; then
-  IS_WIN=true
-  echo 'Windows OS detected'
-else
-  echo 'Unknow OS -`$OSTYPE`'
-fi
 
 if [ $IS_WIN ]; then
   MAKE=mozmake

@@ -2,10 +2,42 @@
 
 . $topsrcdir/browser/config/cliqz.mozconfig
 
+
+export CROSS_CCTOOLS_PATH=/home/dj/localbuild/osxcross/target
+export CROSS_SYSROOT=/home/dj/localbuild/osxcross/target/SDK/MacOSX10.11.sdk
+CROSS_PRIVATE_FRAMEWORKS=$CROSS_SYSROOT/System/Library/PrivateFrameworks
+#FLAGS="-target x86_64-apple-darwin15 -B $CROSS_CCTOOLS_PATH/bin -isysroot $CROSS_SYSROOT"
+FLAGS="-B $CROSS_CCTOOLS_PATH/bin -isysroot $CROSS_SYSROOT"
+
+export CC="/home/dj/localbuild/osxcross/target/bin/x86_64-apple-darwin15-clang $FLAGS"
+export CXX="/home/dj/localbuild/osxcross/target/bin/x86_64-apple-darwin15-clang++ $FLAGS"
+export CPP="/home/dj/localbuild/osxcross/target/bin/x86_64-apple-darwin15-clang $FLAGS -E"
+export LLVMCONFIG=/usr/bin/llvm-config
+export LDFLAGS="-Wl,-syslibroot,$CROSS_SYSROOT -Wl,-dead_strip"
+export BINDGEN_CFLAGS="$FLAGS"
+export TOOLCHAIN_PREFIX=$CROSS_CCTOOLS_PATH/bin/x86_64-apple-darwin15-
+export DSYMUTIL=/usr/bin/llvm-dsymutil
+mk_add_options "export REAL_DSYMUTIL=/usr/bin/llvm-dsymutil"
+export MKFSHFS=/home/dj/localbuild/diskdev_cmds-540.1.linux3/newfs_hfs.tproj/newfs_hfs
+export DMG_TOOL=/home/dj/localbuild/libdmg-hfsplus/build/dmg/dmg
+export HFS_TOOL=/home/dj/localbuild/libdmg-hfsplus/build/hfs/hfsplus
+
+export HOST_CC="/usr/bin/clang"
+export HOST_CXX="/usr/bin/clang++"
+export HOST_CPP="/usr/bin/clang -E"
+export HOST_CFLAGS="-g"
+export HOST_CXXFLAGS="-g"
+export HOST_LDFLAGS="-g"
+
+
 ac_add_options --enable-update-channel=${MOZ_UPDATE_CHANNEL}
 ac_add_options --enable-release
 ac_add_options --with-mozilla-api-keyfile=../mozilla-desktop-geoloc-api.key
 ac_add_options --with-google-api-keyfile=../google-desktop-api.key
+ac_add_options --disable-crashreporter
+
+ac_add_options --target=x86_64-apple-darwin
+ac_add_options --with-macos-private-frameworks=$CROSS_PRIVATE_FRAMEWORKS
 
 if echo $OSTYPE | grep -q "msys"; then
   # Windows specific flags
