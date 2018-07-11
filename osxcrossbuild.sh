@@ -2,6 +2,8 @@
 # FIXME: integrate with other build scripts
 # simple script to cross build on osx
 
+set -e -o pipefail
+
 if [ -z $(which wget) ]; then
     echo "Install wget!"
 fi
@@ -50,25 +52,23 @@ OBJ_DIR=$MOZ_OBJDIR
 SRC_BASE=mozilla-release
 
 # automatic forget tab - start
-if [ -]
 wget -O adult-domains.bin https://s3.amazonaws.com/cdn.cliqz.com/browser-f/APT/adult-domains.bin
 export CQZ_AUTO_PRIVATE_TAB=1
 export CQZ_ADULT_DOMAINS_BF=../adult-domains.bin
 # automatic forget tab - end
 
-ROOT_PATH=$PWD
+export ROOT_PATH=$PWD
 
 # Check if envs for cross build is set properly
 # ${!NAME} will do $NAME and then lookup the variable at the value
 # for e.g NAME=FIRST and FIRST=VALUE
 # ${!NAME} will return VALUE
 for e in "CC" "CXX" "CPP" "TOOLCHAIN_PREFIX" "LLVMCONFIG" "DSYMUTIL" "REAL_DSYMUTIL" "DMG_TOOL" "HFS_TOOL" "HOST_CC" "HOST_CPP" "HOST_CXX" "HOST_CPP"; do
-    if [ -z ${!e} ]; then
+    if [ -z "${!e}" ]; then
         echo $e not set
         exit -1
     fi
 done
-
 
 # actual build process
 cd $SRC_BASE
@@ -79,14 +79,14 @@ if [ -z "$LANG" ]; then
 fi
 
 # for localization repack
-export L10NBASEDIR=../l10n  # --with-l10n-base=...
+export L10NBASEDIR=$ROOT_PATH/l10n  # --with-l10n-base=...
 
 # check for API key files
-if [ ! -f ../mozilla-desktop-geoloc-api.key ]; then
-    echo "mozilla-api-key-required" > ../mozilla-desktop-geoloc-api.key
+if [ ! -f $ROOT_PATH/mozilla-desktop-geoloc-api.key ]; then
+    echo "mozilla-api-key-required" > $ROOT_PATH/mozilla-desktop-geoloc-api.key
 fi
-if [ ! -f ../google-desktop-api.key ]; then
-    echo "google-api-key-required" > ../google-desktop-api.key
+if [ ! -f $ROOT_PATH/google-desktop-api.key ]; then
+    echo "google-api-key-required" > $ROOT_PATH/google-desktop-api.key
 fi
 
 echo '***** Building *****'
