@@ -10,7 +10,7 @@ fi
 
 export MAKE=make
 export MOZ_UPDATE_CHANNEL=beta
-
+export SHELL=$SHELL
 
 export CQZ_VERSION=$(cat ./mozilla-release/browser/config/version_display.txt)
 export CQZ_BALROG_DOMAIN=balrog-admin.10e99.net
