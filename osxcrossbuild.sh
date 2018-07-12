@@ -63,7 +63,7 @@ export ROOT_PATH=$PWD
 # ${!NAME} will do $NAME and then lookup the variable at the value
 # for e.g NAME=FIRST and FIRST=VALUE
 # ${!NAME} will return VALUE
-for e in "CC" "CXX" "CPP" "TOOLCHAIN_PREFIX" "LLVMCONFIG" "DSYMUTIL" "REAL_DSYMUTIL" "DMG_TOOL" "HFS_TOOL" "HOST_CC" "HOST_CPP" "HOST_CXX" "HOST_CPP"; do
+for e in "CC" "CXX" "CPP" "TOOLCHAIN_PREFIX" "LLVMCONFIG" "DSYMUTIL" "REAL_DSYMUTIL" "DMG_TOOL" "HFS_TOOL" "HOST_CC" "HOST_CPP" "HOST_CXX" "HOST_CPP" "CROSS_PRIVATE_FRAMEWORKS"; do
     if [ -z "${!e}" ]; then
         echo $e not set
         exit -1
