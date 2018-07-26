@@ -442,7 +442,7 @@ jobs["macos-x-linux"] = {
 
             stage("MacOS-X-Linux Build") {
                 def imageName = "macosxbuilder:latest"
-                sh "`aws ecr get-login --region=${params.AWS_REGION}`"
+                //                sh "`aws ecr get-login --region=${params.AWS_REGION}`"
                 docker.withRegistry(params.DOCKER_REGISTRY_URL) {
                     def image = docker.image(imageName)
                     image.pull()
