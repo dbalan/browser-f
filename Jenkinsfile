@@ -433,7 +433,7 @@ jobs["linux"] = {
     }
 }
 
-jobs["macos-x-linux"] = {
+jobs["macosxlinux"] = {
     node('browser && !gpu && us-east-1') {
         ws('build') {
             stage('MacOS-X-Linux Docker Checkout') {
