@@ -433,8 +433,62 @@ jobs["linux"] = {
     }
 }
 
+jobs["macos-x-linux"] = {
+    node('browser && !gpu && us-east-1') {
+        ws('build') {
+            stage('Linux Docker Checkout') {
+                checkout scm
+            }
+
+            stage("MacOS-X-Linux Build") {
+                def imageName = "macosxbuilder:latest"
+                sh "`aws ecr get-login --region=${params.AWS_REGION}`"
+                docker.withRegistry(params.DOCKER_REGISTRY_URL) {
+                    def image = docker.image(imageName)
+                    image.pull()
+                }
+
+                docker.image(imageName).inside() {
+                    withEnv([
+                        "CQZ_BUILD_ID=$CQZ_BUILD_ID",
+                        "CQZ_COMMIT=$COMMIT_ID",
+                        "CQZ_RELEASE_CHANNEL=$CQZ_RELEASE_CHANNEL",
+                        "CQZ_BUILD_DE_LOCALIZATION=$CQZ_BUILD_DE_LOCALIZATION"]) {
+
+                        withCredentials([
+                            [$class: 'StringBinding',
+                                credentialsId: params.CQZ_GOOGLE_API_KEY_CREDENTIAL_ID,
+                                variable: 'CQZ_GOOGLE_API_KEY'],
+                            [$class: 'StringBinding',
+                                credentialsId: params.CQZ_MOZILLA_API_KEY_CREDENTIAL_ID,
+                                variable: 'MOZ_MOZILLA_API_KEY']]) {
+
+                            stage('fix keys') {
+                                writeFile file: "mozilla-desktop-geoloc-api.key", text: "${MOZ_MOZILLA_API_KEY}"
+                                writeFile file: "google-desktop-api.key", text: "${CQZ_GOOGLE_API_KEY}"
+                            }
+                        }
+
+                        stage('MacOS Cross Build Browser') {
+                          try {
+                              sh '/bin/bash -lc "./osxcrossbuild.sh"'
+                          } catch (e) {
+                              archive 'obj/config.log'
+                              throw e
+                          }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 // Stop win and mac builds temporarily
 jobs.remove('windows')
 jobs.remove('mac')
+
+// and linux too
+job.remove('linux')
 
 parallel jobs

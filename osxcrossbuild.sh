@@ -1,5 +1,4 @@
 #/usr/bin/env bash
-# FIXME: integrate with other build scripts
 # simple script to cross build on osx
 
 set -e -o pipefail
