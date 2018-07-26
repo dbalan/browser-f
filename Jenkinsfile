@@ -489,6 +489,6 @@ jobs.remove('windows')
 jobs.remove('mac')
 
 // and linux too
-job.remove('linux')
+jobs.remove('linux')
 
 parallel jobs
