@@ -1,7 +1,50 @@
 # mozconfig to cross build on osx
 . $topsrcdir/browser/config/cliqz-release.mozconfig
 
-ac_add_options --disable-crashreporter
+export NODEJS=$topsrcdir/node/bin/node
+
+RUSTC="$topsrcdir/rustc/bin/rustc"
+CARGO="$topsrcdir/rustc/bin/cargo"
+RUSTDOC="$topsrcdir/rustc/bin/rustdoc"
+RUSTFMT="$topsrcdir/rustc/bin/rustfmt"
+CBINDGEN="$topsrcdir/cbindgen/cbindgen"
+
+ac_add_options --enable-rust-simd
+ac_add_options --enable-crashreporter
+
+# ld needs libLTO.so from llvm
+mk_add_options "export LD_LIBRARY_PATH=$topsrcdir/clang/lib"
+
+CROSS_CCTOOLS_PATH=$topsrcdir/cctools
+# This SDK was copied from a local XCode install and uploaded to tooltool.
+# Generate the tarball by running this command with the proper SDK version:
+#   sdk_path=$(xcrun --sdk macosx10.12 --show-sdk-path)
+#   tar -C $(dirname ${sdk_path}) -cHjf /tmp/$(basename ${sdk_path}).tar.bz2 $(basename ${sdk_path})
+# Upload the resulting tarball from /tmp to tooltool, and change the entry in
+# `browser/config/tooltool-manifests/macosx64/cross-releng.manifest`.
+CROSS_SYSROOT=$topsrcdir/MacOSX10.11.sdk
+CROSS_PRIVATE_FRAMEWORKS=$CROSS_SYSROOT/System/Library/PrivateFrameworks
+FLAGS="-target x86_64-apple-darwin11 -B $CROSS_CCTOOLS_PATH/bin -isysroot $CROSS_SYSROOT"
+
+export CC="$topsrcdir/clang/bin/clang $FLAGS"
+export CXX="$topsrcdir/clang/bin/clang++ $FLAGS"
+export CPP="$topsrcdir/clang/bin/clang $FLAGS -E"
+export LLVMCONFIG=$topsrcdir/clang/bin/llvm-config
+export LDFLAGS="-Wl,-syslibroot,$CROSS_SYSROOT -Wl,-dead_strip"
+export BINDGEN_CFLAGS="$FLAGS"
+export TOOLCHAIN_PREFIX=$CROSS_CCTOOLS_PATH/bin/x86_64-apple-darwin11-
+export DSYMUTIL=$topsrcdir/build/macosx/llvm-dsymutil
+mk_add_options "export REAL_DSYMUTIL=$topsrcdir/llvm-dsymutil/bin/llvm-dsymutil"
+export MKFSHFS=$topsrcdir/hfsplus-tools/newfs_hfs
+export DMG_TOOL=$topsrcdir/dmg/dmg
+export HFS_TOOL=$topsrcdir/dmg/hfsplus
+
+export HOST_CC="$topsrcdir/clang/bin/clang"
+export HOST_CXX="$topsrcdir/clang/bin/clang++"
+export HOST_CPP="$topsrcdir/clang/bin/clang -E"
+export HOST_CFLAGS="-g"
+export HOST_CXXFLAGS="-g"
+export HOST_LDFLAGS="-g"
 
 ac_add_options --target=x86_64-apple-darwin
 ac_add_options --with-macos-private-frameworks=$CROSS_PRIVATE_FRAMEWORKS
