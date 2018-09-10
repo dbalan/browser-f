@@ -15,5 +15,7 @@ ADD rustc.tar.xz /opt
 ADD rust-size.tar.xz /opt
 ADD sccache2.tar.xz /opt
 ADD MacOSX10.11.sdk.tar.bz2 /opt
+# RUST seems to depend on cc
+RUN ln -s /opt/clang/bin/clang /usr/bin/cc
 ENV CROSS_TARGET  x86_64-apple-darwin
 ENV TOOLCHAIN /opt
