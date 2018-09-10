@@ -1,7 +1,7 @@
 # dockerfile to build macos version on linux.
 FROM ubuntu:17.10
 
-RUN apt-get update && apt-get install -y unzip python3 make zip autoconf2.13 wget python yasm
+RUN apt-get update && apt-get install -y unzip python3 make zip autoconf2.13 wget python yasm clang-6.0
 
 WORKDIR /opt
 ADD cbindgen.tar.xz /opt
@@ -15,4 +15,5 @@ ADD rustc.tar.xz /opt
 ADD rust-size.tar.xz /opt
 ADD sccache2.tar.xz /opt
 ADD MacOSX10.11.sdk.tar.bz2 /opt
+ENV CROSS_TARGET  x86_64-apple-darwin
 ENV TOOLCHAIN /opt
