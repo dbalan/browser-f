@@ -1,5 +1,5 @@
 # dockerfile to build macos version on linux.
-FROM ubuntu:17.10
+FROM ubuntu:16.04
 
 RUN apt-get update && apt-get install -y unzip python3 make zip autoconf2.13 wget python yasm clang-6.0
 
